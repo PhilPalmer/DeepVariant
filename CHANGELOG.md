@@ -1,5 +1,8 @@
 # nf-core/deepvariant: Changelog
 
+The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
+and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
+
 ## v1.0 - 2018-11-19
 
 This release marks the point where the pipeline was moved from lifebit-ai/DeepVariant over to the new nf-core community, at nf-core/DeepVariant. The [nf-core](http://nf-co.re/) template was used to help ensure that the pipeline meets the standards of nf-core.
@@ -20,3 +23,15 @@ In summary, the main changes are:
 ...and many more minor tweaks.
 
 Thanks to everyone who has worked on this release!
+
+## v1.1dev - [date]
+
+Initial release of nf-core/deepvariant, created with the [nf-core](http://nf-co.re/) template.
+
+### `Added`
+
+### `Fixed`
+
+### `Dependencies`
+
+### `Deprecated`
