@@ -67,71 +67,19 @@ if (params.help) {
     exit 0
 }
 
-def summary = [:]
-summary['Pipeline Name']    = 'nf-core/deepvariant'
-summary['Pipeline Version'] = workflow.manifest.version
-if(params.bam_folder) summary['Bam folder'] = params.bam_folder
-if(params.bam) summary['Bam file']          = params.bam
-summary['Bed file']                         = params.bed
-if(params.genome) summary['Reference genome']    = params.genome
-if(params.fasta) summary['Fasta Ref']            = params.fasta
-if(params.fai) summary['Fasta Index']            = params.fai
-if(params.fastagz) summary['Fasta gzipped ']     = params.fastagz
-if(params.gzfai) summary['Fasta gzipped Index']  = params.gzfai
-if(params.gzi) summary['Fasta bgzip Index']      = params.gzi
-if(params.rgid != 4) summary['BAM Read Group ID']                   = params.rgid
-if(params.rglb != 'lib1') summary['BAM Read Group Library']         = params.rglb
-if(params.rgpl != 'illumina') summary['BAM Read Group Platform']    = params.rgpl
-if(params.rgpu != 'unit1') summary['BAM Read Group Platform Unit']  = params.rgpu
-if(params.rgsm != 20) summary['BAM Read Group Sample']              = params.rgsm
-summary['Max Memory']       = params.max_memory
-summary['Max CPUs']         = params.max_cpus
-summary['Max Time']         = params.max_time
-summary['Model']            = model
-summary['Output dir']       = params.outdir
-summary['Working dir']      = workflow.workDir
-summary['Container Engine'] = workflow.containerEngine
-if(workflow.containerEngine) summary['Container'] = workflow.container
-summary['Current home']     = "$HOME"
-summary['Current user']     = "$USER"
-summary['Current path']     = "$PWD"
-summary['Working dir']      = workflow.workDir
-summary['Output dir']       = params.outdir
-summary['Script dir']       = workflow.projectDir
-summary['Config Profile']   = workflow.profile
-if(workflow.profile == 'awsbatch'){
-   summary['AWS Region'] = params.awsregion
-   summary['AWS Queue'] = params.awsqueue
-}
-if(params.email) summary['E-mail Address'] = params.email
-log.info summary.collect { k,v -> "${k.padRight(15)}: $v" }.join("\n")
-log.info "========================================="
+/*--------------------------------------------------
+  SET UP CONFIGURATION VARIABLES
+---------------------------------------------------*/
 
+// Set model for call variants either whole genome or exome
+model= params.exome ? 'wes' : 'wgs'
 
-def create_workflow_summary(summary) {
-
-    def yaml_file = workDir.resolve('workflow_summary_mqc.yaml')
-    yaml_file.text  = """
-=======
-/*
- * SET UP CONFIGURATION VARIABLES
- */
-
-// Check if genome exists in the config file
-if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
-    exit 1, "The provided genome '${params.genome}' is not available in the iGenomes file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
-}
-
-// TODO nf-core: Add any reference files that are needed
-// Configurable reference genomes
-//
-// NOTE - THIS IS NOT USED IN THIS PIPELINE, EXAMPLE ONLY
-// If you want to use the channel below in a process, define the following:
-//   input:
-//   file fasta from ch_fasta
-//
-params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
-if (params.fasta) { ch_fasta = file(params.fasta, checkIfExists: true) }
+//set fasta files equal to genome option if used
+params.fasta = params.genome ? params.genomes[ params.genome ].fasta : false
+params.fai = params.genome ? params.genomes[ params.genome ].fai : false
+params.fastagz = params.genome ? params.genomes[ params.genome ].fastagz : false
+params.gzfai = params.genome ? params.genomes[ params.genome ].gzfai : false
+params.gzi = params.genome ? params.genomes[ params.genome ].gzi : false
 
 // Has the run name been specified by the user?
 //  this has the bonus effect of catching both -name and --name
@@ -155,28 +103,56 @@ ch_multiqc_config = file("$baseDir/assets/multiqc_config.yaml", checkIfExists: t
 ch_multiqc_custom_config = params.multiqc_config ? Channel.fromPath(params.multiqc_config, checkIfExists: true) : Channel.empty()
 ch_output_docs = file("$baseDir/docs/output.md", checkIfExists: true)
 
-/*
- * Create a channel for input read files
- */
-if (params.readPaths) {
-    if (params.single_end) {
-        Channel
-            .from(params.readPaths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { ch_read_files_fastqc; ch_read_files_trimming }
-    } else {
-        Channel
-            .from(params.readPaths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.readPaths was empty - no input files supplied" }
-            .into { ch_read_files_fastqc; ch_read_files_trimming }
-    }
+/*--------------------------------------------------
+  Create a channel for input files
+---------------------------------------------------*/
+
+// Setup fasta channels
+(fastaToIndexCh, fastaToGzCh, fastaToGzFaiCh, fastaToGziCh) = Channel.fromPath(params.fasta).into(4)
+
+bedToExamples = Channel
+    .fromPath(params.bed)
+    .ifEmpty { exit 1, "please specify --bed option (--bed bedfile)"}
+
+if(params.fai){
+faiToExamples = Channel
+    .fromPath(params.fai)
+    .ifEmpty{exit 1, "Fai file not found: ${params.fai}"}
+}
+
+if(params.fastagz){
+fastaGz = Channel
+    .fromPath(params.fastagz)
+    .ifEmpty{exit 1, "Fastagz file not found: ${params.fastagz}"}
+    .into {fastaGzToExamples; fastaGzToVariants }
+}
+
+if(params.gzfai){
+gzFai = Channel
+    .fromPath(params.gzfai)
+    .ifEmpty{exit 1, "gzfai file not found: ${params.gzfai}"}
+    .into{gzFaiToExamples; gzFaiToVariants }
+}
+
+if(params.gzi){
+gzi = Channel
+    .fromPath(params.gzi)
+    .ifEmpty{exit 1, "gzi file not found: ${params.gzi}"}
+    .into {gziToExamples; gziToVariants}
+}
+
+if(params.bam_folder) {
+  Channel
+      .fromPath("${params.bam_folder}/${params.bam_file_prefix}*.bam")
+      .ifEmpty { exit 1, "${params.bam_folder}/${params.bam_file_prefix}*.bam not found"}
+      .set{bamChannel}
+} else if(params.bam) {
+  Channel
+      .fromPath(params.bam)
+      .ifEmpty { exit 1, "${params.bam} not found"}
+      .set{bamChannel}
 } else {
-    Channel
-        .fromFilePairs(params.reads, size: params.single_end ? 1 : 2)
-        .ifEmpty { exit 1, "Cannot find any reads matching: ${params.reads}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --single_end on the command line." }
-        .into { ch_read_files_fastqc; ch_read_files_trimming }
+  exit 1, "please specify --bam OR --bam_folder"
 }
 
 // Header log info
@@ -184,10 +160,20 @@ log.info nfcoreHeader()
 def summary = [:]
 if (workflow.revision) summary['Pipeline Release'] = workflow.revision
 summary['Run Name']         = custom_runName ?: workflow.runName
-// TODO nf-core: Report custom parameters here
-summary['Reads']            = params.reads
-summary['Fasta Ref']        = params.fasta
-summary['Data Type']        = params.single_end ? 'Single-End' : 'Paired-End'
+if(params.bam_folder) summary['Bam folder'] = params.bam_folder
+if(params.bam) summary['Bam file']          = params.bam
+summary['Bed file']                         = params.bed
+if(params.genome) summary['Reference genome']    = params.genome
+if(params.fasta) summary['Fasta Ref']            = params.fasta
+if(params.fai) summary['Fasta Index']            = params.fai
+if(params.fastagz) summary['Fasta gzipped ']     = params.fastagz
+if(params.gzfai) summary['Fasta gzipped Index']  = params.gzfai
+if(params.gzi) summary['Fasta bgzip Index']      = params.gzi
+if(params.rgid != 4) summary['BAM Read Group ID']                   = params.rgid
+if(params.rglb != 'lib1') summary['BAM Read Group Library']         = params.rglb
+if(params.rgpl != 'illumina') summary['BAM Read Group Platform']    = params.rgpl
+if(params.rgpu != 'unit1') summary['BAM Read Group Platform Unit']  = params.rgpu
+if(params.rgsm != 20) summary['BAM Read Group Sample']              = params.rgsm
 summary['Max Resources']    = "$params.max_memory memory, $params.max_cpus cpus, $params.max_time time per job"
 if (workflow.containerEngine) summary['Container'] = "$workflow.containerEngine - $workflow.container"
 summary['Output dir']       = params.outdir
@@ -230,66 +216,6 @@ Channel.from(summary.collect{ [it.key, it.value] })
         </dl>
     """.stripIndent() }
     .set { ch_workflow_summary }
-
-//set model for call variants either whole genome or exome
-model= params.exome ? 'wes' : 'wgs'
-
-//set fasta files equal to genome option if used
-params.fasta = params.genome ? params.genomes[ params.genome ].fasta : false
-params.fai = params.genome ? params.genomes[ params.genome ].fai : false
-params.fastagz = params.genome ? params.genomes[ params.genome ].fastagz : false
-params.gzfai = params.genome ? params.genomes[ params.genome ].gzfai : false
-params.gzi = params.genome ? params.genomes[ params.genome ].gzi : false
-
-//setup fasta channels
-(fastaToIndexCh, fastaToGzCh, fastaToGzFaiCh, fastaToGziCh) = Channel.fromPath(params.fasta).into(4)
-
-bedToExamples = Channel
-    .fromPath(params.bed)
-    .ifEmpty { exit 1, "please specify --bed option (--bed bedfile)"}
-
-if(params.fai){
-faiToExamples = Channel
-    .fromPath(params.fai)
-    .ifEmpty{exit 1, "Fai file not found: ${params.fai}"}
-}
-
-if(params.fastagz){
-fastaGz = Channel
-    .fromPath(params.fastagz)
-    .ifEmpty{exit 1, "Fastagz file not found: ${params.fastagz}"}
-    .into {fastaGzToExamples; fastaGzToVariants }
-}
-
-if(params.gzfai){
-gzFai = Channel
-    .fromPath(params.gzfai)
-    .ifEmpty{exit 1, "gzfai file not found: ${params.gzfai}"}
-    .into{gzFaiToExamples; gzFaiToVariants }
-}
-
-if(params.gzi){
-gzi = Channel
-    .fromPath(params.gzi)
-    .ifEmpty{exit 1, "gzi file not found: ${params.gzi}"}
-    .into {gziToExamples; gziToVariants}
-}
-/*--------------------------------------------------
-  Bam related input files
----------------------------------------------------*/
-if(params.bam_folder) {
-  Channel
-      .fromPath("${params.bam_folder}/${params.bam_file_prefix}*.bam")
-      .ifEmpty { exit 1, "${params.bam_folder}/${params.bam_file_prefix}*.bam not found"}
-      .set{bamChannel}
-} else if(params.bam) {
-  Channel
-      .fromPath(params.bam)
-      .ifEmpty { exit 1, "${params.bam} not found"}
-      .set{bamChannel}
-} else {
-  exit 1, "please specify --bam OR --bam_folder"
-}
 
 /*-------------------------------------------------------------------
   Parse software version numbers
